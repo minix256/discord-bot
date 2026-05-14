@@ -18,7 +18,7 @@ import {
   type GuildMember,
 } from "discord.js";
 import { db, discordUserIdsTable, guildConfigTable } from "@workspace/db";
-import { eq, count } from "drizzle-orm";
+import { eq, count, asc } from "drizzle-orm";
 import { logger } from "./lib/logger";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -81,6 +81,12 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addSubcommand((sub) =>
       sub.setName("ticket").setDescription("Posta o painel de abertura de tickets"),
+    ),
+  new SlashCommandBuilder()
+    .setName("listar")
+    .setDescription("Listagens do servidor")
+    .addSubcommand((sub) =>
+      sub.setName("ids").setDescription("Mostra todos os membros com ID registrado em ordem"),
     ),
   new SlashCommandBuilder()
     .setName("configurar")
@@ -362,6 +368,51 @@ async function handleCloseTicket(interaction: ButtonInteraction) {
   }
 }
 
+// ─── /listar ids ─────────────────────────────────────────────────────────────
+async function handleListarIds(interaction: Interaction) {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== "listar") return;
+  if (interaction.options.getSubcommand() !== "ids") return;
+
+  await interaction.deferReply({ flags: 0 });
+
+  const rows = await db
+    .select()
+    .from(discordUserIdsTable)
+    .orderBy(asc(discordUserIdsTable.seqId));
+
+  if (rows.length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(RED)
+      .setTitle("🪪 Lista de IDs")
+      .setDescription("Nenhum membro registrou um ID ainda.")
+      .setTimestamp();
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  // Divide em páginas de 25 por embed (limite do Discord)
+  const PAGE_SIZE = 25;
+  const pages = Math.ceil(rows.length / PAGE_SIZE);
+  const embeds = [];
+
+  for (let p = 0; p < pages; p++) {
+    const slice = rows.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE);
+    const lines = slice.map((r) => `\`#${r.seqId}\` — <@${r.discordUserId}> (${r.displayName})`);
+
+    const embed = new EmbedBuilder()
+      .setColor(RED)
+      .setTitle(p === 0 ? `🪪 Lista de IDs — ${rows.length} registrado(s)` : `🪪 Lista de IDs (cont.)`)
+      .setDescription(lines.join("\n"))
+      .setTimestamp();
+
+    embeds.push(embed);
+  }
+
+  // Discord permite no máximo 10 embeds por mensagem
+  await interaction.editReply({ embeds: embeds.slice(0, 10) });
+}
+
 // ─── /pedir id ────────────────────────────────────────────────────────────────
 async function handlePedirId(interaction: Interaction) {
   if (!interaction.isChatInputCommand()) return;
@@ -485,6 +536,7 @@ export function startBot() {
         return;
       }
       await handlePedirId(interaction);
+      await handleListarIds(interaction);
       await handlePainelTicket(interaction);
       await handleConfigurar(interaction);
     } catch (err) {
