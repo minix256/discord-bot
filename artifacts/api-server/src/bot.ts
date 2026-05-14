@@ -124,81 +124,84 @@ async function handleTicketButton(interaction: ButtonInteraction) {
   await interaction.deferReply({ flags: 64 }); // ephemeral só para quem clicou
 
   const guild = interaction.guild;
+  const userId = interaction.user.id;
+  const userTag = interaction.user.tag;
 
   if (!guild) {
-    await interaction.editReply("Este botão só funciona dentro de um servidor.");
+    await interaction.editReply("❌ Este botão só pode ser usado dentro de um servidor.");
     return;
   }
 
-  let member: GuildMember;
+  // Busca o canal de origem para pegar a categoria (com fallback)
+  let categoryId: string | null = null;
   try {
-    member = await guild.members.fetch(interaction.user.id);
-  } catch (err) {
-    logger.error({ err }, "Não foi possível buscar o membro");
-    await interaction.editReply("Não foi possível obter seus dados de membro. Tente novamente.");
-    return;
+    const sourceChannel = interaction.channel ?? await interaction.client.channels.fetch(interaction.channelId);
+    categoryId = (sourceChannel as TextChannel)?.parentId ?? null;
+  } catch {
+    // sem categoria: o canal será criado na raiz do servidor
   }
 
-  const sourceChannel = interaction.channel as TextChannel | null;
-  const categoryId = sourceChannel?.parentId ?? null;
   const ticketId = randomTicketId();
   const channelName = `ticket-${ticketId}`;
+  const botId = guild.members.me?.id ?? interaction.client.user?.id;
 
   try {
+    const overwrites: Parameters<typeof guild.channels.create>[0]["permissionOverwrites"] = [
+      {
+        id: guild.roles.everyone.id,
+        deny: [PermissionFlagsBits.ViewChannel],
+      },
+      {
+        id: userId,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+        ],
+      },
+    ];
+
+    if (botId) {
+      overwrites.push({
+        id: botId,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ManageChannels,
+          PermissionFlagsBits.ReadMessageHistory,
+        ],
+      });
+    }
+
     const ticketChannel = await guild.channels.create({
       name: channelName,
       type: ChannelType.GuildText,
       parent: categoryId ?? undefined,
-      permissionOverwrites: [
-        {
-          id: guild.roles.everyone.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: member.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-          ],
-        },
-        {
-          id: guild.members.me!.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ManageChannels,
-            PermissionFlagsBits.ReadMessageHistory,
-          ],
-        },
-      ],
+      permissionOverwrites: overwrites,
     });
 
-    // Embed de boas-vindas dentro do ticket
     const welcomeEmbed = new EmbedBuilder()
       .setColor(RED)
       .setTitle(`${type.emoji} Ticket — ${type.label}`)
       .setDescription(
-        `Olá, <@${member.user.id}>! 👋\n\n` +
+        `Olá, <@${userId}>! 👋\n\n` +
         `Seu ticket do tipo **${type.label}** foi criado com sucesso.\n` +
         `Aguarde, a equipe irá te atender em breve.\n\n` +
         `**ID do Ticket:** \`${ticketId}\``,
       )
-      .setFooter({ text: `Ticket aberto por ${interaction.user.tag}` })
+      .setFooter({ text: `Ticket aberto por ${userTag}` })
       .setTimestamp();
 
-    await ticketChannel.send({ content: `<@${member.user.id}>`, embeds: [welcomeEmbed] });
+    await ticketChannel.send({ content: `<@${userId}>`, embeds: [welcomeEmbed] });
 
-    logger.info({ userId: member.user.id, ticketId, type: type.label }, "Ticket criado");
+    logger.info({ userId, ticketId, type: type.label, guildId: guild.id }, "Ticket criado");
 
-    await interaction.editReply(
-      `✅ Seu ticket foi criado! Acesse: <#${ticketChannel.id}>`,
-    );
+    await interaction.editReply(`✅ Seu ticket foi criado! Acesse: <#${ticketChannel.id}>`);
   } catch (err) {
-    logger.error({ err }, "Erro ao criar canal de ticket");
+    logger.error({ err, guildId: guild.id }, "Erro ao criar canal de ticket");
     const errMsg = err instanceof Error ? err.message : String(err);
     await interaction.editReply(
-      `❌ Não consegui criar o canal do ticket. Verifique se o bot tem permissão de **Gerenciar Canais**.\nErro: ${errMsg}`,
+      `❌ Não consegui criar o canal do ticket. Verifique se o bot tem permissão de **Gerenciar Canais** neste servidor.\nErro: ${errMsg}`,
     );
   }
 }
