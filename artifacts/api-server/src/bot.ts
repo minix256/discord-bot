@@ -40,13 +40,9 @@ function randomTicketId(): string {
 }
 
 function getMemberDisplayName(interaction: Interaction): string {
-  const member = interaction.member as APIInteractionGuildMember | GuildMember | null;
-  if (!member) return interaction.user.username;
-  if ("nickname" in member && member.nickname) return member.nickname;
-  if ("nick" in member && (member as APIInteractionGuildMember).nick) {
-    return (member as APIInteractionGuildMember).nick!;
-  }
-  return interaction.user.displayName ?? interaction.user.username;
+  // Usa o nome global do Discord (display name) ou username.
+  // Nunca usa o apelido do servidor — ele é o que vamos sobrescrever.
+  return interaction.user.globalName ?? interaction.user.username;
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
