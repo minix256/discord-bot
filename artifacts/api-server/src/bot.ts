@@ -89,6 +89,18 @@ const commands = [
       sub.setName("ids").setDescription("Mostra todos os membros com ID registrado em ordem"),
     ),
   new SlashCommandBuilder()
+    .setName("remover")
+    .setDescription("Remoção de registros")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((sub) =>
+      sub
+        .setName("id")
+        .setDescription("Remove o ID registrado de um membro (admin)")
+        .addUserOption((opt) =>
+          opt.setName("membro").setDescription("Membro que terá o ID removido").setRequired(true),
+        ),
+    ),
+  new SlashCommandBuilder()
     .setName("configurar")
     .setDescription("Configurações do bot neste servidor")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -368,6 +380,63 @@ async function handleCloseTicket(interaction: ButtonInteraction) {
   }
 }
 
+// ─── /remover id ─────────────────────────────────────────────────────────────
+async function handleRemoverId(interaction: Interaction) {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== "remover") return;
+  if (interaction.options.getSubcommand() !== "id") return;
+
+  await interaction.deferReply({ flags: 0 });
+
+  const target = interaction.options.getUser("membro", true);
+  const guildId = interaction.guildId;
+
+  const existing = await db
+    .select()
+    .from(discordUserIdsTable)
+    .where(eq(discordUserIdsTable.discordUserId, target.id))
+    .limit(1);
+
+  if (existing.length === 0) {
+    const embed = new EmbedBuilder()
+      .setColor(RED)
+      .setTitle("❌ Não encontrado")
+      .setDescription(`<@${target.id}> não possui nenhum ID registrado.`)
+      .setTimestamp();
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  const record = existing[0]!;
+  await db.delete(discordUserIdsTable).where(eq(discordUserIdsTable.discordUserId, target.id));
+
+  // Tenta limpar o apelido do membro via REST
+  if (guildId) {
+    try {
+      await interaction.client.rest.patch(Routes.guildMember(guildId, target.id), {
+        body: { nick: null },
+        reason: `ID removido por ${interaction.user.tag}`,
+      });
+    } catch {
+      // Sem permissão ou dono do servidor — ignora silenciosamente
+    }
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(RED)
+    .setTitle("🗑️ ID Removido")
+    .setDescription(`O ID de <@${target.id}> foi removido com sucesso.`)
+    .addFields(
+      { name: "Membro", value: `<@${target.id}> (${target.tag})`, inline: true },
+      { name: "ID removido", value: `**${record.seqId}**`, inline: true },
+      { name: "Removido por", value: `<@${interaction.user.id}>`, inline: true },
+    )
+    .setFooter({ text: "O apelido do membro foi redefinido se possível." })
+    .setTimestamp();
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
 // ─── /listar ids ─────────────────────────────────────────────────────────────
 async function handleListarIds(interaction: Interaction) {
   if (!interaction.isChatInputCommand()) return;
@@ -536,6 +605,7 @@ export function startBot() {
         return;
       }
       await handlePedirId(interaction);
+      await handleRemoverId(interaction);
       await handleListarIds(interaction);
       await handlePainelTicket(interaction);
       await handleConfigurar(interaction);
