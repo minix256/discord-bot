@@ -4,6 +4,7 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  EmbedBuilder,
   type Interaction,
   type GuildMember,
 } from "discord.js";
@@ -13,6 +14,8 @@ import { logger } from "./lib/logger";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
+
+const RED = 0xe74c3c;
 
 if (!TOKEN) {
   throw new Error("DISCORD_BOT_TOKEN environment variable is required.");
@@ -48,13 +51,18 @@ async function handlePedirId(interaction: Interaction) {
   if (interaction.commandName !== "pedir") return;
   if (interaction.options.getSubcommand() !== "id") return;
 
-  await interaction.deferReply({ ephemeral: true });
+  // Visível para todos (sem ephemeral)
+  await interaction.deferReply({ ephemeral: false });
 
   const userId = interaction.user.id;
   const member = interaction.member as GuildMember | null;
 
   if (!member) {
-    await interaction.editReply("Este comando só pode ser usado em um servidor.");
+    const embed = new EmbedBuilder()
+      .setColor(RED)
+      .setTitle("❌ Erro")
+      .setDescription("Este comando só pode ser usado dentro de um servidor.");
+    await interaction.editReply({ embeds: [embed] });
     return;
   }
 
@@ -67,9 +75,17 @@ async function handlePedirId(interaction: Interaction) {
 
     if (existing.length > 0) {
       const record = existing[0]!;
-      await interaction.editReply(
-        `Você já possui o ID **${record.seqId}**. Seu apelido é: \`${record.displayName} | ${record.seqId}\``,
-      );
+      const embed = new EmbedBuilder()
+        .setColor(RED)
+        .setTitle("🪪 ID já registrado")
+        .setDescription(`Você já possui um ID cadastrado!`)
+        .addFields(
+          { name: "Seu ID", value: `**${record.seqId}**`, inline: true },
+          { name: "Apelido", value: `\`${record.displayName} | ${record.seqId}\``, inline: true },
+        )
+        .setFooter({ text: `Solicitado por ${interaction.user.tag}` })
+        .setTimestamp();
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
 
@@ -87,23 +103,48 @@ async function handlePedirId(interaction: Interaction) {
       displayName: displayName,
     });
 
-    try {
-      await member.setNickname(newNickname, "ID atribuído via /pedir id");
-    } catch (nickErr) {
-      logger.warn({ err: nickErr, userId }, "Não foi possível alterar o apelido (verifique permissões do bot)");
-      await interaction.editReply(
-        `Seu ID é **${nextId}**! Não consegui mudar seu apelido automaticamente (verifique se o bot tem permissão de gerenciar apelidos e se seu cargo é inferior ao do bot). Apelido sugerido: \`${newNickname}\``,
-      );
-      return;
+    // Tenta mudar o apelido
+    const isOwner = interaction.guild?.ownerId === userId;
+    let nickChanged = false;
+    let nickWarning = "";
+
+    if (isOwner) {
+      nickWarning = "⚠️ Você é o dono do servidor — o Discord não permite que bots alterem o apelido do dono. Por favor, mude manualmente para `" + newNickname + "`.";
+    } else {
+      try {
+        await (member as GuildMember).setNickname(newNickname, "ID atribuído via /pedir id");
+        nickChanged = true;
+      } catch (nickErr) {
+        logger.warn({ err: nickErr, userId }, "Não foi possível alterar o apelido");
+        const errMsg = nickErr instanceof Error ? nickErr.message : String(nickErr);
+        nickWarning = `⚠️ Não consegui alterar o apelido automaticamente: ${errMsg}\nMude manualmente para \`${newNickname}\`.`;
+      }
     }
 
-    logger.info({ userId, seqId: nextId, nickname: newNickname }, "ID atribuído");
-    await interaction.editReply(
-      `✅ Seu ID é **${nextId}**! Seu apelido foi atualizado para: \`${newNickname}\``,
-    );
+    logger.info({ userId, seqId: nextId, nickname: newNickname, nickChanged }, "ID atribuído");
+
+    const embed = new EmbedBuilder()
+      .setColor(RED)
+      .setTitle("🪪 ID Registrado com Sucesso!")
+      .setDescription(nickChanged
+        ? `Seu apelido foi atualizado para \`${newNickname}\`.`
+        : nickWarning)
+      .addFields(
+        { name: "Membro", value: `<@${userId}>`, inline: true },
+        { name: "ID", value: `**${nextId}**`, inline: true },
+        { name: "Apelido", value: `\`${newNickname}\``, inline: true },
+      )
+      .setFooter({ text: `Solicitado por ${interaction.user.tag}` })
+      .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
   } catch (err) {
     logger.error({ err, userId }, "Erro ao processar /pedir id");
-    await interaction.editReply("Ocorreu um erro ao processar seu pedido. Tente novamente.");
+    const embed = new EmbedBuilder()
+      .setColor(RED)
+      .setTitle("❌ Erro interno")
+      .setDescription("Ocorreu um erro ao processar seu pedido. Tente novamente.");
+    await interaction.editReply({ embeds: [embed] });
   }
 }
 
