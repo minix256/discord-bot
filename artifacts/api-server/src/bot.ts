@@ -11,9 +11,11 @@ import {
   ChannelType,
   PermissionFlagsBits,
   type Interaction,
-  type GuildMember,
-  type TextChannel,
   type ButtonInteraction,
+  type APIGuild,
+  type APIChannel,
+  type APIInteractionGuildMember,
+  type GuildMember,
 } from "discord.js";
 import { db, discordUserIdsTable } from "@workspace/db";
 import { eq, count } from "drizzle-orm";
@@ -21,14 +23,11 @@ import { logger } from "./lib/logger";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
-
 const RED = 0xe74c3c;
 
-if (!TOKEN) {
-  throw new Error("DISCORD_BOT_TOKEN environment variable is required.");
-}
+if (!TOKEN) throw new Error("DISCORD_BOT_TOKEN environment variable is required.");
 
-// ─── Ticket categories ───────────────────────────────────────────────────────
+// ─── Ticket types ─────────────────────────────────────────────────────────────
 const TICKET_TYPES: Record<string, { label: string; emoji: string }> = {
   ticket_compras:   { label: "Compras",   emoji: "🛒" },
   ticket_geral:     { label: "Geral",     emoji: "💬" },
@@ -38,6 +37,17 @@ const TICKET_TYPES: Record<string, { label: string; emoji: string }> = {
 
 function randomTicketId(): string {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+// Helper: get display name from interaction member (works without cache)
+function getMemberDisplayName(interaction: Interaction): string {
+  const member = interaction.member as APIInteractionGuildMember | GuildMember | null;
+  if (!member) return interaction.user.username;
+  if ("nickname" in member && member.nickname) return member.nickname;
+  if ("nick" in member && (member as APIInteractionGuildMember).nick) {
+    return (member as APIInteractionGuildMember).nick!;
+  }
+  return interaction.user.displayName ?? interaction.user.username;
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -91,103 +101,71 @@ async function handlePainelTicket(interaction: Interaction) {
     .setTimestamp();
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId("ticket_compras")
-      .setLabel("Compras")
-      .setEmoji("🛒")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("ticket_geral")
-      .setLabel("Geral")
-      .setEmoji("💬")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("ticket_duvidas")
-      .setLabel("Dúvidas")
-      .setEmoji("❓")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("ticket_denuncias")
-      .setLabel("Denúncias")
-      .setEmoji("🚨")
-      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("ticket_compras").setLabel("Compras").setEmoji("🛒").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("ticket_geral").setLabel("Geral").setEmoji("💬").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("ticket_duvidas").setLabel("Dúvidas").setEmoji("❓").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("ticket_denuncias").setLabel("Denúncias").setEmoji("🚨").setStyle(ButtonStyle.Danger),
   );
 
   await interaction.reply({ embeds: [embed], components: [row] });
 }
 
-// ─── Button: abrir ticket ─────────────────────────────────────────────────────
+// ─── Button: abrir ticket (via REST — sem cache de guilda) ────────────────────
 async function handleTicketButton(interaction: ButtonInteraction) {
   const type = TICKET_TYPES[interaction.customId];
   if (!type) return;
 
-  await interaction.deferReply({ flags: 64 }); // ephemeral só para quem clicou
+  await interaction.deferReply({ flags: 64 });
 
+  const guildId = interaction.guildId;
   const userId = interaction.user.id;
   const userTag = interaction.user.tag;
-  const guildId = interaction.guildId;
+  const botId = interaction.client.user!.id;
 
   if (!guildId) {
     await interaction.editReply("❌ Este botão só pode ser usado dentro de um servidor.");
     return;
   }
 
-  let guild;
+  // Pega categoryId diretamente do canal da interação (sem buscar guilda)
+  let categoryId: string | undefined;
   try {
-    guild = interaction.guild ?? await interaction.client.guilds.fetch(guildId);
-  } catch (err) {
-    logger.error({ err, guildId }, "Não foi possível buscar o servidor");
-    await interaction.editReply("❌ Não foi possível acessar os dados do servidor. Tente novamente.");
-    return;
-  }
-
-  // Busca o canal de origem para pegar a categoria (com fallback)
-  let categoryId: string | null = null;
-  try {
-    const sourceChannel = interaction.channel ?? await interaction.client.channels.fetch(interaction.channelId);
-    categoryId = (sourceChannel as TextChannel)?.parentId ?? null;
+    const ch = await interaction.client.rest.get(Routes.channel(interaction.channelId)) as APIChannel;
+    categoryId = "parent_id" in ch && ch.parent_id ? ch.parent_id : undefined;
   } catch {
-    // sem categoria: o canal será criado na raiz do servidor
+    // sem categoria: cria na raiz
   }
 
   const ticketId = randomTicketId();
   const channelName = `ticket-${ticketId}`;
-  const botId = guild.members.me?.id ?? interaction.client.user?.id;
 
   try {
-    const overwrites: Parameters<typeof guild.channels.create>[0]["permissionOverwrites"] = [
-      {
-        id: guild.roles.everyone.id,
-        deny: [PermissionFlagsBits.ViewChannel],
-      },
-      {
-        id: userId,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
+    // Cria canal via REST — sem precisar da guilda em cache
+    const everyoneDeny = String(PermissionFlagsBits.ViewChannel);
+    const userAllow = String(
+      PermissionFlagsBits.ViewChannel |
+      PermissionFlagsBits.SendMessages |
+      PermissionFlagsBits.ReadMessageHistory,
+    );
+    const botAllow = String(
+      PermissionFlagsBits.ViewChannel |
+      PermissionFlagsBits.SendMessages |
+      PermissionFlagsBits.ManageChannels |
+      PermissionFlagsBits.ReadMessageHistory,
+    );
+
+    const newChannel = await interaction.client.rest.post(Routes.guildChannels(guildId), {
+      body: {
+        name: channelName,
+        type: ChannelType.GuildText,
+        parent_id: categoryId ?? null,
+        permission_overwrites: [
+          { id: guildId, type: 0, deny: everyoneDeny },       // @everyone
+          { id: userId,  type: 1, allow: userAllow },          // usuário
+          { id: botId,   type: 1, allow: botAllow },           // bot
         ],
       },
-    ];
-
-    if (botId) {
-      overwrites.push({
-        id: botId,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ManageChannels,
-          PermissionFlagsBits.ReadMessageHistory,
-        ],
-      });
-    }
-
-    const ticketChannel = await guild.channels.create({
-      name: channelName,
-      type: ChannelType.GuildText,
-      parent: categoryId ?? undefined,
-      permissionOverwrites: overwrites,
-    });
+    }) as APIChannel;
 
     const welcomeEmbed = new EmbedBuilder()
       .setColor(RED)
@@ -201,56 +179,25 @@ async function handleTicketButton(interaction: ButtonInteraction) {
       .setFooter({ text: `Ticket aberto por ${userTag}` })
       .setTimestamp();
 
-    await ticketChannel.send({ content: `<@${userId}>`, embeds: [welcomeEmbed] });
+    await interaction.client.rest.post(Routes.channelMessages(newChannel.id), {
+      body: {
+        content: `<@${userId}>`,
+        embeds: [welcomeEmbed.toJSON()],
+      },
+    });
 
-    logger.info({ userId, ticketId, type: type.label, guildId: guild.id }, "Ticket criado");
-
-    await interaction.editReply(`✅ Seu ticket foi criado! Acesse: <#${ticketChannel.id}>`);
+    logger.info({ userId, ticketId, type: type.label, guildId }, "Ticket criado");
+    await interaction.editReply(`✅ Seu ticket foi criado! Acesse: <#${newChannel.id}>`);
   } catch (err) {
-    logger.error({ err, guildId: guild.id }, "Erro ao criar canal de ticket");
+    logger.error({ err, guildId }, "Erro ao criar canal de ticket");
     const errMsg = err instanceof Error ? err.message : String(err);
     await interaction.editReply(
-      `❌ Não consegui criar o canal do ticket. Verifique se o bot tem permissão de **Gerenciar Canais** neste servidor.\nErro: ${errMsg}`,
+      `❌ Não consegui criar o canal do ticket. Verifique se o bot tem a permissão **Gerenciar Canais**.\nErro: ${errMsg}`,
     );
   }
 }
 
 // ─── /pedir id ────────────────────────────────────────────────────────────────
-async function trySetNickname(
-  member: GuildMember,
-  nickname: string,
-  isOwner: boolean,
-): Promise<{ success: boolean; reason: string }> {
-  if (isOwner) {
-    return {
-      success: false,
-      reason:
-        "Você é o **dono do servidor**. O Discord não permite que bots alterem o apelido do dono — isso é uma restrição da própria plataforma. Por favor, mude manualmente para `" +
-        nickname +
-        "`.",
-    };
-  }
-  try {
-    await member.setNickname(nickname, "ID atribuído via /pedir id");
-    return { success: true, reason: "" };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = (err as { code?: number }).code;
-    logger.error({ err, userId: member.id, code }, "Falha ao alterar apelido");
-    let reason = `Não consegui alterar o apelido automaticamente.`;
-    if (code === 50013) {
-      reason +=
-        " **Motivo: sem permissão.** Certifique-se de que o cargo do bot está **acima** do seu cargo na hierarquia do servidor.";
-    } else if (code === 50035) {
-      reason += " **Motivo: apelido inválido** (muito longo ou caractere inválido).";
-    } else {
-      reason += ` **Motivo: ${msg}**`;
-    }
-    reason += `\nApelido sugerido: \`${nickname}\``;
-    return { success: false, reason };
-  }
-}
-
 async function handlePedirId(interaction: Interaction) {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== "pedir") return;
@@ -259,10 +206,9 @@ async function handlePedirId(interaction: Interaction) {
   await interaction.deferReply({ flags: 0 });
 
   const userId = interaction.user.id;
-  const guild = interaction.guild;
-  const member = interaction.member as GuildMember | null;
+  const guildId = interaction.guildId;
 
-  if (!member || !guild) {
+  if (!guildId) {
     const embed = new EmbedBuilder()
       .setColor(RED)
       .setTitle("❌ Erro")
@@ -271,8 +217,47 @@ async function handlePedirId(interaction: Interaction) {
     return;
   }
 
-  const isOwner = guild.ownerId === userId;
-  logger.info({ userId, guildOwnerId: guild.ownerId, isOwner }, "Verificando dono");
+  // Descobre se é o dono via REST — sem precisar do cache
+  let isOwner = false;
+  try {
+    const guildData = await interaction.client.rest.get(Routes.guild(guildId)) as APIGuild;
+    isOwner = guildData.owner_id === userId;
+  } catch {
+    // Se falhar, assume que não é dono
+  }
+
+  const displayName = getMemberDisplayName(interaction);
+
+  async function trySetNickname(nickname: string): Promise<{ success: boolean; reason: string }> {
+    if (isOwner) {
+      return {
+        success: false,
+        reason:
+          "Você é o **dono do servidor**. O Discord não permite que bots alterem o apelido do dono. Por favor, mude manualmente para `" + nickname + "`.",
+      };
+    }
+    try {
+      await interaction.client.rest.patch(Routes.guildMember(guildId!, userId), {
+        body: { nick: nickname },
+        reason: "ID atribuído via /pedir id",
+      });
+      return { success: true, reason: "" };
+    } catch (err: unknown) {
+      const code = (err as { code?: number }).code;
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, userId, code }, "Falha ao alterar apelido");
+      let reason = "Não consegui alterar o apelido automaticamente.";
+      if (code === 50013) {
+        reason += " **Sem permissão** — o cargo do bot precisa estar acima do seu na hierarquia do servidor.";
+      } else {
+        reason += ` **Erro:** ${msg}`;
+      }
+      reason += `\nApelido sugerido: \`${nickname}\``;
+      return { success: false, reason };
+    }
+  }
+
+  logger.info({ userId, guildId, isOwner }, "Verificando dono");
 
   try {
     const existing = await db
@@ -284,7 +269,7 @@ async function handlePedirId(interaction: Interaction) {
     if (existing.length > 0) {
       const record = existing[0]!;
       const newNickname = `${record.displayName} | ${record.seqId}`;
-      const nickResult = await trySetNickname(member, newNickname, isOwner);
+      const nickResult = await trySetNickname(newNickname);
 
       const embed = new EmbedBuilder()
         .setColor(RED)
@@ -306,22 +291,17 @@ async function handlePedirId(interaction: Interaction) {
       return;
     }
 
-    const [countResult] = await db
-      .select({ value: count() })
-      .from(discordUserIdsTable);
-
+    const [countResult] = await db.select({ value: count() }).from(discordUserIdsTable);
     const nextId = (countResult?.value ?? 0) + 1;
-    const displayName = member.displayName;
     const newNickname = `${displayName} | ${nextId}`;
 
     await db.insert(discordUserIdsTable).values({
       discordUserId: userId,
       seqId: nextId,
-      displayName: displayName,
+      displayName,
     });
 
-    const nickResult = await trySetNickname(member, newNickname, isOwner);
-
+    const nickResult = await trySetNickname(newNickname);
     logger.info({ userId, seqId: nextId, nickname: newNickname, nickChanged: nickResult.success }, "ID atribuído");
 
     const embed = new EmbedBuilder()
@@ -353,9 +333,7 @@ async function handlePedirId(interaction: Interaction) {
 
 // ─── Bot setup ────────────────────────────────────────────────────────────────
 export function startBot() {
-  const client = new Client({
-    intents: [GatewayIntentBits.Guilds],
-  });
+  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
   client.once("clientReady", async (c) => {
     logger.info({ tag: c.user.tag }, "Bot conectado ao Discord");
