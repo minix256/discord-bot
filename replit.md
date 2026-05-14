@@ -1,44 +1,48 @@
-# [Project name]
+# Bot de ID Discord
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Bot do Discord que distribui IDs sequenciais aos membros e atualiza seus apelidos automaticamente.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/api-server run dev` — rodar o servidor + bot (porta 5000)
+- `pnpm run typecheck` — checar tipos em todos os pacotes
+- `pnpm run build` — typecheck + build completo
+- `pnpm --filter @workspace/db run push` — aplicar mudanças no schema do BD (dev)
+- Env obrigatório: `DATABASE_URL` — string de conexão Postgres
+- Env obrigatório: `DISCORD_BOT_TOKEN` — token do bot Discord
+- Env opcional: `DISCORD_GUILD_ID` — ID do servidor Discord (registro instantâneo de comandos)
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
+- Discord: discord.js v14
 - Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
-
-## Architecture decisions
-
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- `lib/db/src/schema/discord-ids.ts` — tabela `discord_user_ids` (schema do BD)
+- `artifacts/api-server/src/bot.ts` — lógica do bot Discord
+- `artifacts/api-server/src/index.ts` — entry point (servidor + bot)
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Comando `/pedir id` — atribui um ID sequencial único ao membro e muda o apelido para `Nome | ID`
+- IDs são persistentes no banco de dados PostgreSQL
+- Se o membro já tem um ID, informa sem criar duplicata
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Comandos registrados globalmente levam até 1 hora para aparecer. Para registro instantâneo, defina `DISCORD_GUILD_ID` com o ID do servidor.
+- O bot precisa da permissão "Gerenciar Apelidos" no servidor.
+- O bot não consegue mudar o apelido do dono do servidor.
+- A hierarquia de cargos deve colocar o bot acima dos membros que vão usar o comando.
+
+## User preferences
+
+_Falar em português._
 
 ## Pointers
 
