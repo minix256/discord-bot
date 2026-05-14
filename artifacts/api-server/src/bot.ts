@@ -124,10 +124,18 @@ async function handleTicketButton(interaction: ButtonInteraction) {
   await interaction.deferReply({ flags: 64 }); // ephemeral só para quem clicou
 
   const guild = interaction.guild;
-  const member = interaction.member as GuildMember | null;
 
-  if (!guild || !member) {
+  if (!guild) {
     await interaction.editReply("Este botão só funciona dentro de um servidor.");
+    return;
+  }
+
+  let member: GuildMember;
+  try {
+    member = await guild.members.fetch(interaction.user.id);
+  } catch (err) {
+    logger.error({ err }, "Não foi possível buscar o membro");
+    await interaction.editReply("Não foi possível obter seus dados de membro. Tente novamente.");
     return;
   }
 
