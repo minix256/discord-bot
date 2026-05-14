@@ -179,10 +179,19 @@ async function handleTicketButton(interaction: ButtonInteraction) {
       .setFooter({ text: `Ticket aberto por ${userTag}` })
       .setTimestamp();
 
+    const closeRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId("close_ticket")
+        .setLabel("Fechar Ticket")
+        .setEmoji("🔒")
+        .setStyle(ButtonStyle.Danger),
+    );
+
     await interaction.client.rest.post(Routes.channelMessages(newChannel.id), {
       body: {
         content: `<@${userId}>`,
         embeds: [welcomeEmbed.toJSON()],
+        components: [closeRow.toJSON()],
       },
     });
 
@@ -331,6 +340,38 @@ async function handlePedirId(interaction: Interaction) {
   }
 }
 
+// ─── Fechar ticket ────────────────────────────────────────────────────────────
+async function handleCloseTicket(interaction: ButtonInteraction) {
+  const channelId = interaction.channelId;
+  const guildId = interaction.guildId;
+  const userTag = interaction.user.tag;
+
+  if (!guildId) {
+    await interaction.reply({ content: "❌ Este botão só pode ser usado dentro de um servidor.", flags: 64 });
+    return;
+  }
+
+  // Avisa que vai fechar e deleta após 3 segundos
+  const closeEmbed = new EmbedBuilder()
+    .setColor(RED)
+    .setTitle("🔒 Ticket Encerrado")
+    .setDescription(`Este ticket foi encerrado por **${userTag}**.\nO canal será deletado em instantes...`)
+    .setTimestamp();
+
+  await interaction.reply({ embeds: [closeEmbed] });
+
+  logger.info({ channelId, guildId, closedBy: userTag }, "Ticket encerrado");
+
+  // Aguarda 3 segundos e deleta o canal via REST
+  await new Promise((res) => setTimeout(res, 3000));
+
+  try {
+    await interaction.client.rest.delete(Routes.channel(channelId));
+  } catch (err) {
+    logger.error({ err, channelId }, "Erro ao deletar canal de ticket");
+  }
+}
+
 // ─── Bot setup ────────────────────────────────────────────────────────────────
 export function startBot() {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -347,7 +388,12 @@ export function startBot() {
   client.on("interactionCreate", async (interaction) => {
     try {
       if (interaction.isButton()) {
-        await handleTicketButton(interaction as ButtonInteraction);
+        const btn = interaction as ButtonInteraction;
+        if (btn.customId === "close_ticket") {
+          await handleCloseTicket(btn);
+        } else {
+          await handleTicketButton(btn);
+        }
         return;
       }
       await handlePedirId(interaction);
