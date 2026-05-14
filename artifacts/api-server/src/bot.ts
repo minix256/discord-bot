@@ -123,12 +123,21 @@ async function handleTicketButton(interaction: ButtonInteraction) {
 
   await interaction.deferReply({ flags: 64 }); // ephemeral só para quem clicou
 
-  const guild = interaction.guild;
   const userId = interaction.user.id;
   const userTag = interaction.user.tag;
+  const guildId = interaction.guildId;
 
-  if (!guild) {
+  if (!guildId) {
     await interaction.editReply("❌ Este botão só pode ser usado dentro de um servidor.");
+    return;
+  }
+
+  let guild;
+  try {
+    guild = interaction.guild ?? await interaction.client.guilds.fetch(guildId);
+  } catch (err) {
+    logger.error({ err, guildId }, "Não foi possível buscar o servidor");
+    await interaction.editReply("❌ Não foi possível acessar os dados do servidor. Tente novamente.");
     return;
   }
 
